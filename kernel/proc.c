@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "pinfo.h"
 
 struct cpu cpus[NCPU];
 
@@ -145,6 +146,11 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  p->runticks = 0;
+  p->nsched = 0;
+  p->ctime = ticks;
+  p->level = 0;
+  p->levelticks = 0;
 
   return p;
 }
@@ -168,6 +174,11 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->runticks = 0;
+  p->nsched = 0;
+  p->ctime = 0;
+  p->level = 0;
+  p->levelticks = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -449,6 +460,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->nsched++;
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -700,4 +712,49 @@ procdump(void)
     printk("%d %s %s", p->pid, state, p->name);
     printk("\n");
   }
+}
+
+int
+mlfq_tick(struct proc *p)
+{
+  int found = 0;
+
+  acquire(&p->lock);
+  if (p->state == RUNNING) {
+    p->runticks++;
+    p->levelticks++;
+    found = 1;
+  }
+  release(&p->lock);
+
+  return found;
+}
+
+int
+getpinfo(uint64 addr, int max)
+{
+  if (max < 0)
+    return -1;
+  int count = 0;
+  struct proc *p;
+  for (p = proc; p < &proc[NPROC] && count < max; ++p) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      struct pinfo info;
+      info.pid = p->pid;
+      info.state = p->state;
+      info.level = p->level;
+      info.runticks = p->runticks;
+      info.nsched = p->nsched;
+      info.ctime = p->ctime;
+      safestrcpy(info.name, p->name, sizeof(info.name));
+      release(&p->lock);
+      if (copyout(myproc()->pagetable, myproc()->sz, addr + count * sizeof(info), (char *)&info, sizeof(info)) < 0) {
+        return -1;
+      }
+      ++count;
+    } else
+        release(&p->lock);
+  }
+  return count;
 }
