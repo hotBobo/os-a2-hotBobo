@@ -19,6 +19,8 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void freeproc(struct proc *p);
 
+static int slice[] = {1, 2, 4, 8}; // time slices for each level of MLFQ
+
 extern char trampoline[]; // trampoline.S
 
 // helps ensure that wakeups of wait()ing
@@ -714,20 +716,50 @@ procdump(void)
   }
 }
 
+// Return 1 if RUNNABLE processes exist at a higher priority level than the given level.
+static int
+higher_priority(int level)
+{
+  for (struct proc *p = proc; p < &proc[NPROC]; ++p) {
+    acquire(&p->lock);
+    if (p->state == RUNNABLE && p->level < level) {
+      release(&p->lock);
+      return 1;
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
+
+// Called by the timer interrupt handler at each tick.
+// Increments the current process's runticks and levelticks counters
+// Returns 1 if the current process should yield, 0 otherwise.
 int
 mlfq_tick(struct proc *p)
 {
-  int found = 0;
+  int yielding = 0;
+  int level = 0;
 
   acquire(&p->lock);
   if (p->state == RUNNING) {
     p->runticks++;
     p->levelticks++;
-    found = 1;
+    if (p->levelticks >= slice[p->level]) {
+      if (p->level < 3) {
+        p->level++;
+      }
+      p->levelticks = 0;
+      yielding = 1;
+    }
+    level = p->level;
   }
   release(&p->lock);
-
-  return found;
+  if (!yielding) {
+    if (higher_priority(level)) {
+      yielding = 1;
+    }
+  }
+  return yielding;
 }
 
 int
