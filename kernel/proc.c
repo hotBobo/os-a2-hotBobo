@@ -762,6 +762,21 @@ mlfq_tick(struct proc *p)
   return yielding;
 }
 
+// Reset every process's level to 0 and levelticks to 0, 
+// effectively boosting all processes to the highest priority.
+void
+mlfq_boost(void)
+{
+  for (struct proc *p = proc; p < &proc[NPROC]; ++p) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      p->level = 0;
+      p->levelticks = 0;
+    }
+    release(&p->lock);
+  }
+}
+
 int
 getpinfo(uint64 addr, int max)
 {

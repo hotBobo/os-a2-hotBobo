@@ -169,6 +169,9 @@ clockintr()
   if (cpuid() == 0) {
     acquire(&tickslock);
     ticks++;
+    if (ticks % 64 == 0) {
+      mlfq_boost();
+    }
     wakeup(&ticks);
     release(&tickslock);
   }
