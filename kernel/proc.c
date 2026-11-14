@@ -20,6 +20,7 @@ extern void forkret(void);
 static void freeproc(struct proc *p);
 
 static int slice[] = {1, 2, 4, 8}; // time slices for each level of MLFQ
+static int cursor[4]; // last proc[] index chosed an each level of MLFQ
 
 extern char trampoline[]; // trampoline.S
 
@@ -431,6 +432,26 @@ kwait(uint64 addr)
   }
 }
 
+// Returns index of a RUNNABLE process at the best level, or -1
+static int
+pick_next(int *lvl)
+{
+  for (int level = 0; level < 4; ++level) {
+    for (int k = 1; k <= NPROC; ++k) {
+      int i = (cursor[level] + k) % NPROC; // start from the last chosen index for this level
+      struct proc *p = &proc[i];
+      acquire(&p->lock);
+      if (p->state == RUNNABLE && p->level == level) {
+        *lvl = level;
+        release(&p->lock);
+        return i;
+      }
+      release(&p->lock);
+    }
+  }
+  return -1;
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -454,32 +475,31 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        p->nsched++;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Don't re-enable interrupts on release.
-        mycpu()->intena = 0;
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
-      }
-      release(&p->lock);
-    }
-    if (found == 0) {
+    int lvl;
+    int i = pick_next(&lvl);
+    if (i < 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
+      continue;
     }
+
+    p = &proc[i];
+    acquire(&p->lock);
+    if (p->state == RUNNABLE && p->level == lvl) { // Check again in case another CPU has taken it
+      cursor[lvl] = i; // update the last chosen index for this level
+      // Switch to chosen process.  It is the process's job
+      // to release its lock and then reacquire it
+      // before jumping back to us.
+      p->state = RUNNING;
+      p->nsched++;
+      c->proc = p;
+      swtch(&c->context, &p->context);
+  
+      // Don't re-enable interrupts on release.
+      mycpu()->intena = 0;
+      c->proc = 0;
+    }
+    release(&p->lock);
   }
 }
 
